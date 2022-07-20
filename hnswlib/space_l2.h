@@ -3,6 +3,7 @@
 
 namespace hnswlib {
 
+    // 不使用加速
     static float
     L2Sqr(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
         float *pVect1 = (float *) pVect1v;
@@ -94,21 +95,27 @@ namespace hnswlib {
 
 #if defined(USE_SSE)
 
+    // 一次处理128位的块，即16字节。
     static float
     L2SqrSIMD16ExtSSE(const void *pVect1v, const void *pVect2v, const void *qty_ptr) {
         float *pVect1 = (float *) pVect1v;
         float *pVect2 = (float *) pVect2v;
         size_t qty = *((size_t *) qty_ptr);
+        // 32字节对齐
         float PORTABLE_ALIGN32 TmpRes[8];
         size_t qty16 = qty >> 4;
 
+        // 计算结束地址（为何要先右移再左移？取整）
         const float *pEnd1 = pVect1 + (qty16 << 4);
 
         __m128 diff, v1, v2;
+        // 对应于_mm_load1_ps的功能，不需要字节对齐，将四个字节加载到暂存器，从性能考虑，在内层循环不要使用这类指令。
         __m128 sum = _mm_set1_ps(0);
 
         while (pVect1 < pEnd1) {
             //_mm_prefetch((char*)(pVect2 + 16), _MM_HINT_T0);
+            // 一步 4*sizeof(float) = 4*4 byte = 16 byte
+            //用于处理没有对齐在16bytes上的数据，但是其速度会比较慢
             v1 = _mm_loadu_ps(pVect1);
             pVect1 += 4;
             v2 = _mm_loadu_ps(pVect2);
@@ -139,6 +146,7 @@ namespace hnswlib {
         }
 
         _mm_store_ps(TmpRes, sum);
+        // 并行处理4个folat，所以四个相加
         return TmpRes[0] + TmpRes[1] + TmpRes[2] + TmpRes[3];
     }
 #endif
@@ -154,6 +162,7 @@ namespace hnswlib {
         float *pVect1 = (float *) pVect1v + qty16;
         float *pVect2 = (float *) pVect2v + qty16;
 
+        // 不满足乘除的部分，不使用加速，单独处理
         size_t qty_left = qty - qty16;
         float res_tail = L2Sqr(pVect1, pVect2, &qty_left);
         return (res + res_tail);
@@ -212,7 +221,9 @@ namespace hnswlib {
         size_t dim_;
     public:
         L2Space(size_t dim) {
+            // 不启用加速
             fstdistfunc_ = L2Sqr;
+            // 启用加速
     #if defined(USE_SSE) || defined(USE_AVX) || defined(USE_AVX512)
         #if defined(USE_AVX512)
             if (AVX512Capable())
@@ -224,8 +235,10 @@ namespace hnswlib {
                 L2SqrSIMD16Ext = L2SqrSIMD16ExtAVX;
         #endif
 
+            // 16个float，即64字节，cacheline的大小
             if (dim % 16 == 0)
                 fstdistfunc_ = L2SqrSIMD16Ext;
+            // 4个float，即16个字节，SIMD的大小
             else if (dim % 4 == 0)
                 fstdistfunc_ = L2SqrSIMD4Ext;
             else if (dim > 16)
@@ -252,6 +265,7 @@ namespace hnswlib {
         ~L2Space() {}
     };
 
+    // 一次处理4字节
     static int
     L2SqrI4x(const void *__restrict pVect1, const void *__restrict pVect2, const void *__restrict qty_ptr) {
 
@@ -278,7 +292,7 @@ namespace hnswlib {
         }
         return (res);
     }
-
+    // 一次处理一个字节
     static int L2SqrI(const void* __restrict pVect1, const void* __restrict pVect2, const void* __restrict qty_ptr) {
         size_t qty = *((size_t*)qty_ptr);
         int res = 0;

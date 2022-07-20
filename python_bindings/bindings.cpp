@@ -18,12 +18,15 @@ using namespace pybind11::literals; // needed to bring in _a literal
  *
  * The method is borrowed from nmslib
  */
+
+ //共享内存并行控制
 template<class Function>
 inline void ParallelFor(size_t start, size_t end, size_t numThreads, Function fn) {
+//如输入线程小于等于0，返回硬件支持的并发线程数
     if (numThreads <= 0) {
         numThreads = std::thread::hardware_concurrency();
     }
-
+//实现并发
     if (numThreads == 1) {
         for (size_t id = start; id < end; id++) {
             fn(id, 0);
@@ -32,7 +35,7 @@ inline void ParallelFor(size_t start, size_t end, size_t numThreads, Function fn
         std::vector<std::thread> threads;
         std::atomic<size_t> current(start);
 
-        // keep track of exceptions in threads
+        // 跟踪线程中的异常
         // https://stackoverflow.com/a/32428427/1713196
         std::exception_ptr lastException = nullptr;
         std::mutex lastExceptMutex;
@@ -72,7 +75,7 @@ inline void ParallelFor(size_t start, size_t end, size_t numThreads, Function fn
     }
 }
 
-
+//Pybind11会将这些C++的异常转换为对应的Python异常：
 inline void assert_true(bool expr, const std::string & msg) {
     if (expr == false)
     throw std::runtime_error("Unpickle Error: "+msg);
@@ -83,6 +86,8 @@ inline void assert_true(bool expr, const std::string & msg) {
 template<typename dist_t, typename data_t=float>
 class Index {
 public:
+//初始化，根据space_name决定距离计算公式
+//初始化alg、线程数量、默认邻居 数10
   Index(const std::string &space_name, const int dim) :
   space_name(space_name), dim(dim) {
     normalize=false;
@@ -120,13 +125,13 @@ public:
   hnswlib::labeltype cur_l;
   hnswlib::HierarchicalNSW<dist_t> *appr_alg;
   hnswlib::SpaceInterface<float> *l2space;
-
+//析构
   ~Index() {
       delete l2space;
       if (appr_alg)
           delete appr_alg;
   }
-
+//初始化索引。
     void init_new_index(const size_t maxElements, const size_t M, const size_t efConstruction, const size_t random_seed) {
         if (appr_alg) {
             throw new std::runtime_error("The index is already initiated.");
@@ -138,21 +143,21 @@ public:
         appr_alg->ef_ = default_ef;
         seed=random_seed;
     }
-
+//设置ef
     void set_ef(size_t ef) {
       default_ef=ef;
       if (appr_alg)
         appr_alg->ef_ = ef;
     }
-
+//设置线程数量
     void set_num_threads(int num_threads) {
         this->num_threads_default = num_threads;
     }
-
+//持久保存索引
     void saveIndex(const std::string &path_to_index) {
         appr_alg->saveIndex(path_to_index);
     }
-
+//将索引从持久性加载到未初始化的索引。
     void loadIndex(const std::string &path_to_index, size_t max_elements) {
       if (appr_alg) {
           std::cerr<<"Warning: Calling load_index for an already inited index. Old index is being deallocated.";
@@ -162,7 +167,7 @@ public:
       cur_l = appr_alg->cur_element_count;
       index_inited = true;
     }
-
+//归一化向量（降维）
     void normalize_vector(float *data, float *norm_array){
         float norm=0.0f;
         for(int i=0;i<dim;i++)
@@ -171,9 +176,11 @@ public:
         for(int i=0;i<dim;i++)
             norm_array[i]=data[i]*norm;
     }
-
+//插入数据
     void addItems(py::object input, py::object ids_ = py::none(), int num_threads = -1) {
         py::array_t < dist_t, py::array::c_style | py::array::forcecast > items(input);
+        //1.线程判断
+        //2.输入向量的数组（N*dim）、判断输入是否符合要求
         auto buffer = items.request();
         if (num_threads <= 0)
             num_threads = num_threads_default;
@@ -181,6 +188,7 @@ public:
         size_t rows, features;
 
         if (buffer.ndim != 2 && buffer.ndim != 1) throw std::runtime_error("data must be a 1d/2d array");
+        //生成数据
         if (buffer.ndim == 2) {
             rows = buffer.shape[0];
             features = buffer.shape[1];
@@ -199,7 +207,7 @@ public:
         }
 
         std::vector<size_t> ids;
-
+//添加元素
         if (!ids_.is_none()) {
             py::array_t < size_t, py::array::c_style | py::array::forcecast > items(ids_);
             auto ids_numpy = items.request();
@@ -254,7 +262,8 @@ public:
             cur_l+=rows;
         }
     }
-
+//get_items
+//接受索引列表并返回向量列表
     std::vector<std::vector<data_t>> getDataReturnList(py::object ids_ = py::none()) {
         std::vector<size_t> ids;
         if (!ids_.is_none()) {
@@ -279,6 +288,8 @@ public:
         return data;
     }
 
+
+//getId
     std::vector<hnswlib::labeltype> getIdsList() {
         std::vector<hnswlib::labeltype> ids;
 
@@ -288,7 +299,7 @@ public:
         return ids;
     }
 
-
+//
     py::dict getAnnData() const { /* WARNING: Index::getAnnData is not thread-safe with Index::addItems */
       std::unique_lock <std::mutex> templock(appr_alg->global);
 
@@ -402,7 +413,7 @@ public:
                     );
     }
 
-
+//序列化
     py::dict getIndexParams() const { /* WARNING: Index::getAnnData is not thread-safe with Index::addItems */
         auto params = py::dict(
                             "ser_version"_a=py::int_(Index<float>::ser_version), //serialization version
@@ -423,7 +434,7 @@ public:
         return py::dict(**params, **ann_params);
     }
 
-
+//将随机生成器的状态反序列化为 new_index->level_generator_ 和 new_index->update_probability_generator_
     static Index<float> * createFromParams(const py::dict d) {
       // check serialization version
       assert_true(((int)py::int_(Index<float>::ser_version)) >= d["ser_version"].cast<int>(), "Invalid serialization version!");
@@ -537,7 +548,7 @@ public:
         }
       }
 }
-
+//
     py::object knnQuery_return_numpy(py::object input, size_t k = 1, int num_threads = -1) {
         py::array_t < dist_t, py::array::c_style | py::array::forcecast > items(input);
         auto buffer = items.request();
@@ -834,10 +845,13 @@ public:
     }
 
 };
-
+//具体绑定
 PYBIND11_PLUGIN(hnswlib) {
         py::module m("hnswlib");
-
+        //绑定Index类内成员函数
+        //形如.def(pybind11<>::init())
+        //构造器，对应的是c++类的构造函数，如果没有这个构造函数，或者参数对不是会调用失败
+        // .def( "python中函数名", &命名空间::类名::函数名 , py::arg(参数)(=默认值));
         py::class_<Index<float>>(m, "Index")
         .def(py::init(&Index<float>::createFromParams), py::arg("params"))
            /* WARNING: Index::createFromIndex is not thread-safe with Index::addItems */
@@ -857,9 +871,12 @@ PYBIND11_PLUGIN(hnswlib) {
         .def("resize_index", &Index<float>::resizeIndex, py::arg("new_size"))
         .def("get_max_elements", &Index<float>::getMaxElements)
         .def("get_current_count", &Index<float>::getCurrentCount)
+        //.def_readonly 绑定静态属性
         .def_readonly("space", &Index<float>::space_name)
         .def_readonly("dim", &Index<float>::dim)
+        //.def_readwrite非共有属性引用
         .def_readwrite("num_threads", &Index<float>::num_threads_default)
+        //def_property的定义，我们就可以像访问python的property风格那样访问私有变量
         .def_property("ef",
           [](const Index<float> & index) {
             return index.index_inited ? index.appr_alg->ef_ : index.default_ef;
@@ -869,6 +886,7 @@ PYBIND11_PLUGIN(hnswlib) {
             if (index.appr_alg)
               index.appr_alg->ef_ = ef_;
         })
+        //readonly关键字标记静态
         .def_property_readonly("max_elements", [](const Index<float> & index) {
             return index.index_inited ? index.appr_alg->max_elements_ : 0;
         })
@@ -881,7 +899,7 @@ PYBIND11_PLUGIN(hnswlib) {
         .def_property_readonly("M",  [](const Index<float> & index) {
           return index.index_inited ? index.appr_alg->M_ : 0;
         })
-
+        //pybind11提供pickling support
         .def(py::pickle(
             [](const Index<float> &ind) { // __getstate__
                 return py::make_tuple(ind.getIndexParams()); /* Return dict (wrapped in a tuple) that fully encodes state of the Index object */
@@ -893,11 +911,15 @@ PYBIND11_PLUGIN(hnswlib) {
                 return Index<float>::createFromParams(t[0].cast<py::dict>());
             }
         ))
-
+        //lambda绑定
         .def("__repr__", [](const Index<float> &a) {
             return "<hnswlib.Index(space='" + a.space_name + "', dim="+std::to_string(a.dim)+")>";
         });
 
+        //绑定BFIndex类成员函数
+        //形如.def(pybind11<>::init())
+        //构造器，对应的是c++类的构造函数，如果没有这个构造函数，或者参数对不是会调用失败
+        // .def( "python中函数名", &命名空间::类名::函数名 , py::arg(参数)(=默认值));
         py::class_<BFIndex<float>>(m, "BFIndex")
         .def(py::init<const std::string &, const int>(), py::arg("space"), py::arg("dim"))
         .def("init_index", &BFIndex<float>::init_new_index, py::arg("max_elements"))
@@ -906,6 +928,7 @@ PYBIND11_PLUGIN(hnswlib) {
         .def("delete_vector", &BFIndex<float>::deleteVector, py::arg("label"))
         .def("save_index", &BFIndex<float>::saveIndex, py::arg("path_to_index"))
         .def("load_index", &BFIndex<float>::loadIndex, py::arg("path_to_index"), py::arg("max_elements")=0)
+        //lambda绑定
         .def("__repr__", [](const BFIndex<float> &a) {
             return "<hnswlib.BFIndex(space='" + a.space_name + "', dim="+std::to_string(a.dim)+")>";
         });
